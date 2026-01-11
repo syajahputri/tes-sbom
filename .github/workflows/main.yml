@@ -87,6 +87,17 @@ jobs:
         sarif_file: results.sarif
         category: grype-sbom
 
+    - name: Generate Grype JSON (CVE + GHSA)
+      run: |
+        grype sbom.json -o json > grype.json
+    
+    - name: Show CVE & GHSA Summary
+      run: |
+        jq -r '
+          .matches[] |
+          .vulnerability as $v |
+          "\($v.id) | \($v.aliases // ["-"] | join(",")) | \($v.severity)"
+        ' grype.json
 
     # ------------------------------------------------------------------
     # TAHAP 5: SECURITY GATE (SIMULASI KONTROL)
