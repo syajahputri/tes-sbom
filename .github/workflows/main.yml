@@ -1,0 +1,126 @@
+name: CI Security Pipeline - SBOM & Vulnerability Scan
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+env:
+  PROJECT_PATH: 'MisterRobotoArigato' 
+  SOLUTION_NAME: 'MisterRobotoArigato.sln'
+
+jobs:
+  secure-build-pipeline:
+    name: Build, Generate SBOM, and Scan
+    runs-on: ubuntu-latest
+
+    steps:
+    # ------------------------------------------------------------------
+    # TAHAP 1: PREPARATION
+    # ------------------------------------------------------------------
+    - name: Checkout Source Code
+      uses: actions/checkout@v4
+
+    # Kita coba install versi lama (2.1) dan baru (6.0)
+    # Ubuntu-latest mungkin kesulitan install 2.1, tapi kita coba saja.
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: |
+          6.0.x
+          2.1.x 
+
+    # Restore penting supaya file 'project.assets.json' terbentuk
+    # Ini "nyawa"-nya Syft buat baca dependensi .NET
+    - name: Restore Dependencies
+      working-directory: ${{ env.PROJECT_PATH }}
+      run: dotnet restore ${{ env.SOLUTION_NAME }}
+      continue-on-error: true 
+
+    # ------------------------------------------------------------------
+    # TAHAP 2: BUILD (DENGAN TOLERANSI ERROR)
+    # ------------------------------------------------------------------
+    - name: Build Application (Release)
+      working-directory: ${{ env.PROJECT_PATH }}
+      # Tambahkan flag continue-on-error supaya pipeline TIDAK MATI jika build gagal
+      # Kita tahu build 2.1 di Linux modern pasti bermasalah
+      run: dotnet build ${{ env.SOLUTION_NAME }} -c Release --no-restore
+      continue-on-error: true 
+
+    # ------------------------------------------------------------------
+    # TAHAP 3: SBOM GENERATION (SYFT)
+    # Sekarang kita scan dari SOURCE/DIRECTORY, bukan hasil build
+    # ------------------------------------------------------------------
+    - name: Generate SBOM (Syft)
+      uses: anchore/sbom-action@v0
+      id: syft-step
+      with:
+        # Scan direktori project langsung (akan membaca file csproj & obj/ assets)
+        path: ${{ env.PROJECT_PATH }}
+        format: cyclonedx-json
+        output-file: ${{ env.PROJECT_PATH }}/sbom.json
+        dependency-snapshot: true
+
+    - name: Upload SBOM Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: sbom-cyclonedx
+        path: ${{ env.PROJECT_PATH }}/sbom.json
+        retention-days: 5
+
+    # ------------------------------------------------------------------
+    # TAHAP 4: VULNERABILITY SCANNING (GRYPE)
+    # ------------------------------------------------------------------
+    - name: Scan SBOM for Vulnerabilities (Grype)
+      uses: anchore/scan-action@v3
+      id: grype-scan
+      with:
+        sbom: ${{ env.PROJECT_PATH }}/sbom.json
+        fail-build: false 
+        output-format: table 
+
+    # Generate Report untuk dibaca manusia/ditaruh di Security Tab
+    - name: Generate SARIF Report
+      uses: anchore/scan-action@v3
+      with:
+        sbom: ${{ env.PROJECT_PATH }}/sbom.json
+        fail-build: false
+        output-format: sarif
+        output-file: ${{ env.PROJECT_PATH }}/results.sarif
+
+    - name: Upload Vulnerability Report (SARIF)
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ env.PROJECT_PATH }}/results.sarif
+        category: grype-scan
+
+    # ------------------------------------------------------------------
+    # TAHAP 5: SECURITY GATE
+    # ------------------------------------------------------------------
+    - name: Security Gate Check
+      run: |
+        echo "🔍 Checking for Critical/High Vulnerabilities..."
+        
+        # Install grype manual sebentar untuk logic gate check
+        curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+        
+        # Cek apakah ada CVE High/Critical
+        grype ${{ env.PROJECT_PATH }}/sbom.json --fail-on high > pipeline_log.txt
+        
+        # Logic: 
+        # Jika Grype gagal (ada high vuln), pipeline exit 1 (MERAH)
+        # Jika Grype sukses (bersih), pipeline exit 0 (HIJAU)
+        if [ $? -ne 0 ]; then
+          echo "❌ SECURITY GATE FAILED: High/Critical vulnerabilities detected!"
+          echo "Ini BAGUS untuk simulasi TA, membuktikan gate bekerja."
+          exit 1
+        else
+          echo "✅ SECURITY GATE PASSED: No critical vulnerabilities found."
+          exit 0
+        fi
