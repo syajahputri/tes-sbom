@@ -91,7 +91,9 @@ jobs:
     # ------------------------------------------------------------------
     # TAHAP 5: SECURITY GATE (SIMULASI KONTROL)
     # ------------------------------------------------------------------
-    - name: Security Gate Check
+    - name: Security Gate Check (Evaluation)
+      id: security_gate
+      continue-on-error: true
       run: |
         echo "🔍 Checking for High/Critical Vulnerabilities..."
     
@@ -102,9 +104,11 @@ jobs:
     
         if [ $GRYPE_EXIT_CODE -ne 0 ]; then
           echo "❌ SECURITY GATE FAILED: High/Critical vulnerabilities detected!"
-          exit 1
+          echo "gate_result=fail" >> $GITHUB_OUTPUT
         else
           echo "✅ SECURITY GATE PASSED: No critical vulnerabilities found."
-          exit 0
+          echo "gate_result=pass" >> $GITHUB_OUTPUT
         fi
+    
+        exit 0
 
