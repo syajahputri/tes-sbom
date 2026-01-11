@@ -66,29 +66,27 @@ jobs:
         retention-days: 5
 
     # ------------------------------------------------------------------
-    # TAHAP 4: VULNERABILITY SCANNING (GRYPE)
+    # TAHAP 4: VULNERABILITY SCANNING (GRYPE - CLI)
     # ------------------------------------------------------------------
-    - name: Scan SBOM for Vulnerabilities (Grype)
-      uses: anchore/scan-action@v3
-      id: grype-scan
-      with:
-        sbom: sbom.json
-        fail-build: false
-        output-format: table
-
-    - name: Generate SARIF Report
-      uses: anchore/scan-action@v3
-      with:
-        sbom: sbom.json
-        fail-build: false
-        output-format: sarif
-        output-file: results.sarif
-
+    - name: Install Grype
+      run: |
+        curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh \
+        | sh -s -- -b /usr/local/bin
+    
+    - name: Scan SBOM with Grype (Table)
+      run: |
+        grype sbom.json -o table || true
+    
+    - name: Generate SARIF Report (Grype)
+      run: |
+        grype sbom.json -o sarif > results.sarif || true
+    
     - name: Upload Vulnerability Report (SARIF)
       uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: results.sarif
-        category: grype-scan
+        category: grype-sbom
+
 
     # ------------------------------------------------------------------
     # TAHAP 5: SECURITY GATE (SIMULASI KONTROL)
