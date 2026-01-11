@@ -94,16 +94,17 @@ jobs:
     - name: Security Gate Check
       run: |
         echo "🔍 Checking for High/Critical Vulnerabilities..."
-
-        curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh \
-          | sh -s -- -b /usr/local/bin
-
+    
+        set +e
         grype sbom.json --fail-on high > pipeline_log.txt
-
-        if [ $? -ne 0 ]; then
+        GRYPE_EXIT_CODE=$?
+        set -e
+    
+        if [ $GRYPE_EXIT_CODE -ne 0 ]; then
           echo "❌ SECURITY GATE FAILED: High/Critical vulnerabilities detected!"
           exit 1
         else
           echo "✅ SECURITY GATE PASSED: No critical vulnerabilities found."
           exit 0
         fi
+
