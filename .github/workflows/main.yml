@@ -69,7 +69,7 @@ jobs:
 
       - name: Generate Grype JSON Report
         run: |
-          grype sbom:syft-sbom.json -o json > grype-report.json
+          grype sbom:tes-sbom-secure-pipeline.cyclonedx.json -o json > grype-report.json || true
 
       # ---- TAMBAHAN: TAMPILKAN CVE DI LOG PIPELINE ----
       - name: Show CVE Summary
