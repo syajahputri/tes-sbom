@@ -12,9 +12,9 @@ permissions:
   actions: read
 
 env:
-  SOLUTION_NAME: 'Appointment.sln'        # Sesuaikan dengan nama solution Anda
+  SOLUTION_NAME: 'Appointment.sln'
   ROSLYN_TOOL_PATH: './Tools/RoslynAnalyzer/RoslynAnalyzer.csproj'
-  EXPOSURE_CONTEXT: 0.5                   # 0.5 untuk Internal PT XYZ, 1.0 untuk Public
+  EXPOSURE_CONTEXT: 0.5
 
 jobs:
   secure-pipeline:
@@ -26,20 +26,19 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      # 2. Setup Lingkungan.NET (Source of Truth Research)
-      - name: Setup.NET SDK
+      # 2. Setup Lingkungan .NET
+      - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x' # Gunakan versi yang sesuai dengan proyek Anda
+          dotnet-version: '8.0.x'
 
-      # 3. Restore dengan Lockfile (Akurasi Tinggi sesuai Riset Li et al. 2025)
+      # 3. Restore Dependency
       - name: Restore Dependencies (Locked Mode)
         run: |
           dotnet restore ${{ env.SOLUTION_NAME }} --force-evaluate --use-lock-file
           dotnet restore ${{ env.SOLUTION_NAME }} --locked-mode
 
-      # 4. Pembuatan SBOM (Komparasi Tools: Syft, Trivy, cdxgen)
-      # Mengacu pada Nicholson (2025) mengenai noise Syft pada runtime assemblies
+      # 4. Generate SBOM (Syft)
       - name: Generate SBOM (Syft)
         uses: anchore/sbom-action@v0
         with:
@@ -47,30 +46,29 @@ jobs:
           format: cyclonedx-json
           output-file: syft-sbom.json
 
+      # 4b. Generate SBOM (Trivy)
       - name: Generate SBOM (Trivy)
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-          trivy fs --format cyclonedx --output trivy-sbom.json.
+          trivy fs --format cyclonedx --output trivy-sbom.json .
 
-      # 5. Pemindaian Kerentanan (Grype - Deep Context)
+      # 5. Vulnerability Scan (Grype)
       - name: Vulnerability Scan (Grype)
         uses: anchore/scan-action@v3
         id: scan
         with:
           sbom: 'syft-sbom.json'
-          fail-build: false # Filter dilakukan di tahap selanjutnya
+          fail-build: false
           output-format: 'json'
 
-      # 6. INOVASI: Roslyn Reachability Analysis (Otomasi Analisis Keterjangkauan)
-      # Membedah Call Graph untuk membuang 97.5% false positives (Riset Li et al.)
+      # 6. Roslyn Reachability Analysis
       - name: Roslyn Static Analysis Filter
         run: |
           dotnet run --project ${{ env.ROSLYN_TOOL_PATH }} -- \
-          --input-vulns ${{ steps.scan.outputs.json }} \
+          --input-vulns '${{ steps.scan.outputs.json }}' \
           --output filtered-vulns.json
 
-      # 7. IMPLEMENTASI RUMUS RISIKO & SECURITY GATE (NIST SP 800-30 Based)
-      # Rumus: (CVSS * EPSS * KEV) * Exposure
+      # 7. Risk Scoring Gate
       - name: Context-Aware Risk Scoring Gate
         shell: python
         run: |
@@ -78,7 +76,7 @@ jobs:
           import sys
 
           exposure = float("${{ env.EXPOSURE_CONTEXT }}")
-          
+
           try:
               with open('filtered-vulns.json') as f:
                   data = json.load(f)
@@ -91,14 +89,12 @@ jobs:
           print("-" * 65)
 
           for vuln in data['matches']:
-              # Komponen Rumus:
               cvss = vuln.get('cvss_score', 0)
-              epss = vuln.get('epss_score', 0.01) # Default rendah jika tidak ada data
+              epss = vuln.get('epss_score', 0.01)
               kev_factor = 1.5 if vuln.get('is_kev', False) else 1.0
-              
-              # Perhitungan Risk Score
+
               risk_score = (cvss * epss * kev_factor) * exposure
-              
+
               status = "CRITICAL" if risk_score >= 8.0 else "TOLERABLE"
               print(f"{vuln['id']:<15} | {vuln['package']:<20} | {risk_score:.2f} / 10 | {status}")
 
@@ -111,7 +107,7 @@ jobs:
           else:
               print("\n[+] SECURITY GATE PASSED: Aplikasi layak dipublikasikan ke server internal.")
 
-      # 8. Upload Laporan sebagai Artefak (Data untuk Analisis Bab 4)
+      # 8. Upload Artifact
       - name: Archive Research Reports
         if: always()
         uses: actions/upload-artifact@v4
