@@ -61,12 +61,33 @@ jobs:
           fail-build: false
           output-format: 'json'
 
+      # ---- TAMBAHAN: GENERATE JSON REPORT DARI GRYPE ----
+      - name: Install Grype CLI
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh \
+          | sh -s -- -b /usr/local/bin
+
+      - name: Generate Grype JSON Report
+        run: |
+          grype syft-sbom.json -o json > grype-report.json
+
+      # ---- TAMBAHAN: TAMPILKAN CVE DI LOG PIPELINE ----
+      - name: Show CVE Summary
+        run: |
+          echo "CVE ID | SEVERITY | PACKAGE"
+          echo "--------------------------------------"
+          jq -r '
+            .matches[] |
+            "\(.vulnerability.id) | \(.vulnerability.severity) | \(.artifact.name)"
+          ' grype-report.json
+
       # 6. Roslyn Reachability Analysis
+      # (sementara masih dimatikan)
 #      - name: Roslyn Static Analysis Filter
- #       run: |
- #         dotnet run --project ${{ env.ROSLYN_TOOL_PATH }} -- \
- #         --input-vulns '${{ steps.scan.outputs.json }}' \
- #         --output filtered-vulns.json
+#        run: |
+#          dotnet run --project ${{ env.ROSLYN_TOOL_PATH }} -- \
+#          --input-vulns '${{ steps.scan.outputs.json }}' \
+#          --output filtered-vulns.json
 
       # 7. Risk Scoring Gate
       - name: Context-Aware Risk Scoring Gate
@@ -116,4 +137,5 @@ jobs:
           path: |
             syft-sbom.json
             trivy-sbom.json
+            grype-report.json
             filtered-vulns.json
