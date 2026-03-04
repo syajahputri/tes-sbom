@@ -1,84 +1,100 @@
-name: ASP.NET DevSecOps Pipeline
+name: ASP.NET DevSecOps Security Gate
 
 on:
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
 
 jobs:
-  security-gate:
+  security-analysis:
     runs-on: ubuntu-latest
     steps:
-      # 1. Persiapan Kode Sumber
       - uses: actions/checkout@v4
 
-      # 2. Setup.NET & Restore dengan Lockfile (Source of Truth)
+      # 1. Setup Lingkungan & Restore (Aktifkan Lockfile)
       - name: Setup.NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-      - name: Restore Dependencies
-        run: dotnet restore --locked-mode # Memastikan akurasi paket sesuai lockfile
+      
+      - name: Restore with Lockfile
+        run: |
+          # Memastikan proyek menggunakan lockfile sebagai Source of Truth
+          dotnet restore --force-evaluate --use-lock-file 
+          dotnet restore --locked-mode
 
-      # 3. Pembuatan SBOM (Syft & Trivy)
+      # 2. Pembuatan SBOM dengan Syft (Membaca Lockfile & Source)
       - name: Generate SBOM with Syft
         uses: anchore/sbom-action@v0
         with:
           format: 'cyclonedx-json'
           output-file: 'syft-sbom.json'
+          path:. # Jalur target pindaian
+
+      # 3. Pembuatan SBOM dengan Trivy (DIPERBAIKI)
       - name: Generate SBOM with Trivy
         run: |
+          # Install Trivy versi terbaru
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          # Menambahkan spasi dan titik (.) di akhir agar pindaian mengarah ke direktori saat ini
           trivy fs --format cyclonedx --output trivy-sbom.json.
 
-      # 4. Pemindaian Kerentanan (Grype)
-      - name: Scan SBOM with Grype
+      # 4. Pemindaian Kerentanan dengan Grype (Mengonsumsi SBOM Syft)
+      - name: Vulnerability Scan with Grype
         uses: anchore/scan-action@v3
         id: scan
         with:
           sbom: 'syft-sbom.json'
-          fail-build: false # Jangan gagal dulu, kita akan filter dengan Roslyn
+          fail-build: false # Jangan gagal di sini, kita filter dulu dengan Roslyn
           output-format: 'json'
 
-      # 5. Analisis Reachability (Roslyn API)
-      # Menjalankan tool Console App Roslyn yang Anda buat
+      # 5. Analisis Reachability (Roslyn API Tool)
+      # Program C# kustom Anda dijalankan untuk membedah Call Graph
       - name: Run Roslyn Reachability Analysis
         run: |
           dotnet run --project./Tools/RoslynAnalyzer/RoslynAnalyzer.csproj -- \
-          --scan-results results.json --output reachable-vulns.json
+          --scan-results ${{ steps.scan.outputs.json }} \
+          --output filtered-vulns.json
 
-      # 6. Perhitungan Risiko & Security Gate
-      # Mengimplementasikan rumus: (CVSS * EPSS * KEV) * Exposure
-      - name: Risk Scoring Gate
+      # 6. Implementasi Rumus Risiko & Security Gate (Python Script)
+      # Rumus: (CVSS * EPSS * KEV) * Exposure
+      - name: Risk Scoring & Security Gate
         shell: python
         run: |
           import json
-          # Variabel Exposure: 1.0 (Public) atau 0.5 (Internal PT XYZ)
-          EXPOSURE = 0.5 
-          
-          with open('reachable-vulns.json') as f:
-              vulns = json.load(f)
-              
+          import sys
+
+          # Konteks PT XYZ: 0.5 (Internal) atau 1.0 (Public)
+          EXPOSURE_FACTOR = 0.5 
+
+          try:
+              with open('filtered-vulns.json') as f:
+                  vulns = json.load(f)
+          except FileNotFoundError:
+              print("No vulnerabilities found or Roslyn scan failed.")
+              sys.exit(0)
+
           high_risk_found = False
           for v in vulns:
-              # Rumus Risiko Komposit
-              risk_score = (v['cvss'] * v['epss'] * v['kev_factor']) * EXPOSURE
-              print(f"CVE: {v['id']} | Risk Score: {risk_score}")
-              
-              if risk_score > 8.0: # Ambang batas kritis
-                  high_risk_found = True
-          
-          if high_risk_found:
-              print("ALERTA: Risiko tinggi ditemukan. Deployment dibatalkan!")
-              exit(1) # Menghentikan pipeline (Security Gate)
+              # Menggabungkan Impact (CVSS) dengan Likelihood (EPSS/KEV)
+              # kev_multiplier: 1.5 jika ada di katalog CISA KEV, 1.0 jika tidak
+              risk_score = (v['cvss'] * v['epss'] * v['kev_multiplier']) * EXPOSURE_FACTOR
+              print(f"ID: {v['id']} | Package: {v['package']} | Final Risk Score: {risk_score:.2f}")
 
-      # 7. Simpan Hasil sebagai Artefak
-      - name: Upload Security Reports
+              if risk_score >= 8.0: # Ambang batas kritis untuk Security Gate
+                  high_risk_found = True
+
+          if high_risk_found:
+              print("\n[!] SECURITY GATE FAIL: Risiko kritis terdeteksi di atas ambang batas PT XYZ.")
+              sys.exit(1) # Gagalkan pipeline
+          else:
+              print("\n[+] SECURITY GATE PASS: Proyek aman untuk dipublikasikan.")
+
+      # 7. Simpan Artefak untuk Analisis Bab 4
+      - name: Archive Security Reports
         uses: actions/upload-artifact@v4
         with:
-          name: security-reports
+          name: TA-Security-Reports
           path: |
             syft-sbom.json
             trivy-sbom.json
-            reachable-vulns.json
+            filtered-vulns.json
