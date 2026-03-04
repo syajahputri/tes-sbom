@@ -62,11 +62,11 @@ jobs:
           output-format: 'json'
 
       # 6. Roslyn Reachability Analysis
-      - name: Roslyn Static Analysis Filter
-        run: |
-          dotnet run --project ${{ env.ROSLYN_TOOL_PATH }} -- \
-          --input-vulns '${{ steps.scan.outputs.json }}' \
-          --output filtered-vulns.json
+#      - name: Roslyn Static Analysis Filter
+ #       run: |
+ #         dotnet run --project ${{ env.ROSLYN_TOOL_PATH }} -- \
+ #         --input-vulns '${{ steps.scan.outputs.json }}' \
+ #         --output filtered-vulns.json
 
       # 7. Risk Scoring Gate
       - name: Context-Aware Risk Scoring Gate
