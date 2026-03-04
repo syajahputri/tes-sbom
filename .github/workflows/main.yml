@@ -1,4 +1,4 @@
-name: CI Security Pipeline - SBOM & Vulnerability Scan
+name: ASP.NET DevSecOps Pipeline
 
 on:
   push:
@@ -6,120 +6,79 @@ on:
   pull_request:
     branches: [ "main" ]
 
-permissions:
-  contents: read
-  security-events: write
-  actions: read
-
-env:
-  PROJECT_PATH: '.'                     # ROOT repo
-  SOLUTION_NAME: 'Appointment.sln'      # Solution di root
-
 jobs:
-  secure-build-pipeline:
-    name: Build, Generate SBOM, and Scan
+  security-gate:
     runs-on: ubuntu-latest
-
     steps:
-    # ------------------------------------------------------------------
-    # TAHAP 1: PREPARATION
-    # ------------------------------------------------------------------
-    - name: Checkout Source Code
-      uses: actions/checkout@v4
+      # 1. Persiapan Kode Sumber
+      - uses: actions/checkout@v4
 
-    - name: Setup .NET SDK
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: |
-          6.0.x
-          2.1.x
+      # 2. Setup.NET & Restore dengan Lockfile (Source of Truth)
+      - name: Setup.NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Restore Dependencies
+        run: dotnet restore --locked-mode # Memastikan akurasi paket sesuai lockfile
 
-    # ------------------------------------------------------------------
-    # TAHAP 2: RESTORE & BUILD (NON-BLOCKING)
-    # ------------------------------------------------------------------
-    - name: Restore Dependencies
-      run: dotnet restore ${{ env.SOLUTION_NAME }}
-      continue-on-error: true
+      # 3. Pembuatan SBOM (Syft & Trivy)
+      - name: Generate SBOM with Syft
+        uses: anchore/sbom-action@v0
+        with:
+          format: 'cyclonedx-json'
+          output-file: 'syft-sbom.json'
+      - name: Generate SBOM with Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          trivy fs --format cyclonedx --output trivy-sbom.json.
 
-    - name: Build Application (Release)
-      run: dotnet build ${{ env.SOLUTION_NAME }} -c Release --no-restore
-      continue-on-error: true
+      # 4. Pemindaian Kerentanan (Grype)
+      - name: Scan SBOM with Grype
+        uses: anchore/scan-action@v3
+        id: scan
+        with:
+          sbom: 'syft-sbom.json'
+          fail-build: false # Jangan gagal dulu, kita akan filter dengan Roslyn
+          output-format: 'json'
 
-    # ------------------------------------------------------------------
-    # TAHAP 3: SBOM GENERATION (SYFT)
-    # Scan dari SOURCE ROOT agar baca .sln & .csproj
-    # ------------------------------------------------------------------
-    - name: Generate SBOM (Syft)
-      uses: anchore/sbom-action@v0
-      id: syft-step
-      with:
-        path: ${{ env.PROJECT_PATH }}
-        format: cyclonedx-json
-        output-file: sbom.json
-        dependency-snapshot: true
+      # 5. Analisis Reachability (Roslyn API)
+      # Menjalankan tool Console App Roslyn yang Anda buat
+      - name: Run Roslyn Reachability Analysis
+        run: |
+          dotnet run --project./Tools/RoslynAnalyzer/RoslynAnalyzer.csproj -- \
+          --scan-results results.json --output reachable-vulns.json
 
-    - name: Upload SBOM Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: sbom-cyclonedx
-        path: sbom.json
-        retention-days: 5
+      # 6. Perhitungan Risiko & Security Gate
+      # Mengimplementasikan rumus: (CVSS * EPSS * KEV) * Exposure
+      - name: Risk Scoring Gate
+        shell: python
+        run: |
+          import json
+          # Variabel Exposure: 1.0 (Public) atau 0.5 (Internal PT XYZ)
+          EXPOSURE = 0.5 
+          
+          with open('reachable-vulns.json') as f:
+              vulns = json.load(f)
+              
+          high_risk_found = False
+          for v in vulns:
+              # Rumus Risiko Komposit
+              risk_score = (v['cvss'] * v['epss'] * v['kev_factor']) * EXPOSURE
+              print(f"CVE: {v['id']} | Risk Score: {risk_score}")
+              
+              if risk_score > 8.0: # Ambang batas kritis
+                  high_risk_found = True
+          
+          if high_risk_found:
+              print("ALERTA: Risiko tinggi ditemukan. Deployment dibatalkan!")
+              exit(1) # Menghentikan pipeline (Security Gate)
 
-    # ------------------------------------------------------------------
-    # TAHAP 4: VULNERABILITY SCANNING (GRYPE - CLI)
-    # ------------------------------------------------------------------
-    - name: Install Grype
-      run: |
-        curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh \
-        | sh -s -- -b /usr/local/bin
-    
-    - name: Scan SBOM with Grype (Table)
-      run: |
-        grype sbom.json -o table || true
-    
-    - name: Generate SARIF Report (Grype)
-      run: |
-        grype sbom.json -o sarif > results.sarif || true
-    
-    - name: Upload Vulnerability Report (SARIF)
-      uses: github/codeql-action/upload-sarif@v3
-      with:
-        sarif_file: results.sarif
-        category: grype-sbom
-
-    - name: Generate Grype JSON (CVE + GHSA)
-      run: |
-        grype sbom.json -o json > grype.json
-    
-    - name: Show CVE & GHSA Summary
-      run: |
-        jq -r '
-          .matches[] |
-          .vulnerability as $v |
-          "\($v.id) | \($v.aliases // ["-"] | join(",")) | \($v.severity)"
-        ' grype.json
-
-    # ------------------------------------------------------------------
-    # TAHAP 5: SECURITY GATE (SIMULASI KONTROL)
-    # ------------------------------------------------------------------
-    - name: Security Gate Check (Evaluation)
-      id: security_gate
-      continue-on-error: true
-      run: |
-        echo "🔍 Checking for High/Critical Vulnerabilities..."
-    
-        set +e
-        grype sbom.json --fail-on high > pipeline_log.txt
-        GRYPE_EXIT_CODE=$?
-        set -e
-    
-        if [ $GRYPE_EXIT_CODE -ne 0 ]; then
-          echo "❌ SECURITY GATE FAILED: High/Critical vulnerabilities detected!"
-          echo "gate_result=fail" >> $GITHUB_OUTPUT
-        else
-          echo "✅ SECURITY GATE PASSED: No critical vulnerabilities found."
-          echo "gate_result=pass" >> $GITHUB_OUTPUT
-        fi
-    
-        exit 0
-
+      # 7. Simpan Hasil sebagai Artefak
+      - name: Upload Security Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            syft-sbom.json
+            trivy-sbom.json
+            reachable-vulns.json
