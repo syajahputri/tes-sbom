@@ -43,7 +43,7 @@ jobs:
       - name: Generate SBOM (Syft)
         uses: anchore/sbom-action@v0
         with:
-          path:.
+          path: .
           format: cyclonedx-json
           output-file: syft-sbom.json
 
